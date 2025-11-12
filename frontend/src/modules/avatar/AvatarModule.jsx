@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Box, Typography, Paper, LinearProgress, ToggleButton, ToggleButtonGroup } from '@mui/material';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAppContext } from '../shared/AppContext';
 import OldManAvatar from './OldManAvatar';
 import LatemanAvatar from './LatemanAvatar';
@@ -25,6 +26,21 @@ const AvatarModule = () => {
     }
 
     const { audioData, visemeData } = currentSpeech;
+    
+    // Debug: Log what we received
+    console.log('🎤 AvatarModule received speech data:', {
+      hasAudio: !!audioData,
+      audioLength: audioData?.length || 0,
+      hasVisemes: !!visemeData,
+      visemeCount: visemeData?.length || 0,
+      text: currentSpeech?.text?.substring(0, 50)
+    });
+    
+    // Check if we have the required data
+    if (!audioData) {
+      console.error('❌ No audio data in currentSpeech:', currentSpeech);
+      return;
+    }
 
     // Stop any existing playback
     if (audioRef.current) {
@@ -256,6 +272,10 @@ const AvatarModule = () => {
 
   return (
     <Box
+      component={motion.div}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.5 }}
       sx={{
         width: '100%',
         height: '100%',
@@ -266,6 +286,10 @@ const AvatarModule = () => {
     >
       {/* Avatar Type Toggle */}
       <Box
+        component={motion.div}
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.5, delay: 0.3 }}
         sx={{
           position: 'absolute',
           top: 20,
@@ -278,7 +302,31 @@ const AvatarModule = () => {
           exclusive
           onChange={(e, newValue) => newValue && setAvatarType(newValue)}
           size="small"
-          sx={{ backgroundColor: 'rgba(0, 0, 0, 0.7)' }}
+          sx={{ 
+            backgroundColor: 'rgba(15, 23, 42, 0.9)',
+            backdropFilter: 'blur(20px)',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+            borderRadius: 2,
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)',
+            '& .MuiToggleButton-root': {
+              color: 'text.secondary',
+              border: 'none',
+              px: 2,
+              py: 1,
+              transition: 'all 0.2s ease',
+              '&.Mui-selected': {
+                backgroundColor: 'primary.main',
+                color: 'white',
+                '&:hover': {
+                  backgroundColor: 'primary.dark',
+                },
+              },
+              '&:hover': {
+                backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                transform: 'scale(1.05)',
+              },
+            },
+          }}
         >
           <ToggleButton value="lateman">Lateman</ToggleButton>
           <ToggleButton value="oldman">Old Man</ToggleButton>
@@ -287,12 +335,40 @@ const AvatarModule = () => {
 
       {/* Avatar Display */}
       <Box sx={{ flex: 1, position: 'relative' }}>
-        {avatarType === 'lateman' && (
-          <LatemanAvatar audioTime={audioTime} audioDuration={audioDuration} visemeIndex={visemeIndex} isSpeaking={isSpeaking} />
-        )}
-        {avatarType === 'oldman' && (
-          <OldManAvatar visemeIndex={visemeIndex} isSpeaking={isSpeaking} />
-        )}
+        <AnimatePresence mode="wait">
+          {avatarType === 'lateman' && (
+            <Box
+              key="lateman"
+              component={motion.div}
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.3 }}
+              sx={{ width: '100%', height: '100%' }}
+            >
+              <LatemanAvatar 
+                audioTime={audioTime} 
+                audioDuration={audioDuration} 
+                visemeIndex={visemeIndex} 
+                visemeSequence={currentSpeech?.visemeData || currentSpeech?.visemes || []}
+                isSpeaking={isSpeaking} 
+              />
+            </Box>
+          )}
+          {avatarType === 'oldman' && (
+            <Box
+              key="oldman"
+              component={motion.div}
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.3 }}
+              sx={{ width: '100%', height: '100%' }}
+            >
+              <OldManAvatar visemeIndex={visemeIndex} isSpeaking={isSpeaking} />
+            </Box>
+          )}
+        </AnimatePresence>
       </Box>
 
       {/* Status Overlay */}
@@ -304,35 +380,83 @@ const AvatarModule = () => {
           right: 20,
         }}
       >
-        {isSpeaking && (
-          <Paper
-            sx={{
-              p: 2,
-              backgroundColor: 'rgba(0, 0, 0, 0.7)',
-              backdropFilter: 'blur(10px)',
-            }}
-          >
-            <Typography variant="body2" gutterBottom>
-              Speaking... {currentSpeech?.text?.substring(0, 50)}
-              {currentSpeech?.text?.length > 50 ? '...' : ''}
-            </Typography>
-            <LinearProgress variant="determinate" value={progress} />
-          </Paper>
-        )}
+        <AnimatePresence mode="wait">
+          {isSpeaking && (
+            <Paper
+              key="speaking"
+              component={motion.div}
+              initial={{ opacity: 0, y: 20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.9 }}
+              transition={{ duration: 0.3 }}
+              sx={{
+                p: 2.5,
+                backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                backdropFilter: 'blur(20px)',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+                borderRadius: 3,
+                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)',
+              }}
+            >
+              <Typography 
+                variant="body2" 
+                gutterBottom
+                component={motion.span}
+                animate={{ opacity: [1, 0.7, 1] }}
+                transition={{ duration: 2, repeat: Infinity }}
+                sx={{
+                  fontWeight: 500,
+                  color: 'primary.light',
+                  mb: 1.5,
+                }}
+              >
+                🎤 Speaking... {currentSpeech?.text?.substring(0, 50)}
+                {currentSpeech?.text?.length > 50 ? '...' : ''}
+              </Typography>
+              <LinearProgress 
+                variant="determinate" 
+                value={progress}
+                sx={{
+                  height: 6,
+                  borderRadius: 3,
+                  backgroundColor: 'rgba(99, 102, 241, 0.2)',
+                  '& .MuiLinearProgress-bar': {
+                    borderRadius: 3,
+                    background: 'linear-gradient(90deg, #6366f1 0%, #ec4899 100%)',
+                  },
+                }}
+              />
+            </Paper>
+          )}
 
-        {!isSpeaking && (
-          <Paper
-            sx={{
-              p: 1,
-              backgroundColor: 'rgba(0, 0, 0, 0.5)',
-              backdropFilter: 'blur(10px)',
-            }}
-          >
-            <Typography variant="caption" color="text.secondary">
-              Ready to speak
-            </Typography>
-          </Paper>
-        )}
+          {!isSpeaking && (
+            <Paper
+              key="ready"
+              component={motion.div}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.3 }}
+              sx={{
+                p: 1.5,
+                backgroundColor: 'rgba(15, 23, 42, 0.7)',
+                backdropFilter: 'blur(10px)',
+                border: '1px solid rgba(99, 102, 241, 0.2)',
+                borderRadius: 2,
+              }}
+            >
+              <Typography 
+                variant="caption" 
+                sx={{
+                  color: 'text.secondary',
+                  fontWeight: 500,
+                }}
+              >
+                ✨ Ready to speak
+              </Typography>
+            </Paper>
+          )}
+        </AnimatePresence>
       </Box>
     </Box>
   );

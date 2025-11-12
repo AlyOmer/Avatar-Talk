@@ -43,6 +43,39 @@ class LipSyncManager:
         'ch': 7, 'jh': 7, 'ng': 1, 'hh': 1,
     }
     
+    # Extended phoneme mapping for Resemble AI (ARPABET notation - uppercase)
+    # Resemble AI uses ARPABET phoneme notation in uppercase
+    RESEMBLE_PHONEME_TO_VISEME = {
+        # Silence/Pause
+        'SIL': 0, 'PAU': 0, 'SP': 0,
+        
+        # Open mouth (A, E sounds) - Viseme 1
+        'AA': 1, 'AE': 1, 'AH': 1, 'AW': 1, 'AY': 1,  # A variants
+        'EH': 1, 'EY': 1, 'ER': 1,                     # E variants
+        
+        # Smile (I sounds) - Viseme 2
+        'IH': 2, 'IY': 2, 'Y': 2,
+        
+        # Round (O sounds) - Viseme 3
+        'AO': 3, 'OW': 3, 'OY': 3,
+        
+        # Pursed (U sounds) - Viseme 4
+        'UH': 4, 'UW': 4, 'W': 4,
+        
+        # Closed (M, B, P) - Viseme 5
+        'B': 5, 'M': 5, 'P': 5,
+        
+        # Teeth on lip (F, V) - Viseme 6
+        'F': 6, 'V': 6,
+        
+        # Teeth visible (Th, S, Z) - Viseme 7
+        'TH': 7, 'DH': 7, 'S': 7, 'Z': 7, 'SH': 7, 'ZH': 7,
+        
+        # Consonants (neutral/open) - Default to viseme 1
+        'D': 1, 'G': 1, 'K': 1, 'L': 1, 'N': 1, 'NG': 1,
+        'R': 2, 'T': 1, 'CH': 7, 'JH': 7, 'HH': 1,
+    }
+    
     def __init__(self):
         self.viseme_names = [
             'silence',      # 0
@@ -162,6 +195,48 @@ class LipSyncManager:
                 "viseme_name": self.viseme_names[viseme],
                 "start": start,
                 "duration": end - start
+            })
+        
+        return viseme_sequence
+    
+    def resemble_phonemes_to_visemes(
+        self, 
+        phonemes: List[Dict]
+    ) -> List[Dict]:
+        """
+        Convert Resemble AI phoneme sequence (ARPABET notation) to viseme sequence
+        
+        Args:
+            phonemes: List of phoneme data from Resemble AI
+                    [{"phoneme": "AH", "start": 0.0, "end": 0.15}, ...]
+            
+        Returns:
+            List of viseme data with precise timing
+            [{"viseme": 1, "start": 0.0, "duration": 0.15, "end": 0.15, "phoneme": "AH"}, ...]
+        """
+        viseme_sequence = []
+        
+        for phoneme_data in phonemes:
+            phoneme = str(phoneme_data.get("phoneme", "SIL")).upper().strip()
+            start = float(phoneme_data.get("start", 0.0))
+            end = float(phoneme_data.get("end", start))
+            duration = end - start
+            
+            # Map ARPABET phoneme to viseme
+            # Try exact match first, then try 2-character prefix
+            viseme = self.RESEMBLE_PHONEME_TO_VISEME.get(phoneme)
+            if viseme is None and len(phoneme) >= 2:
+                viseme = self.RESEMBLE_PHONEME_TO_VISEME.get(phoneme[:2], 0)
+            if viseme is None:
+                viseme = 0  # Default to silence if unknown
+            
+            viseme_sequence.append({
+                "viseme": viseme,
+                "viseme_name": self.viseme_names[viseme],
+                "start": start,
+                "duration": duration,
+                "end": end,
+                "phoneme": phoneme  # Keep original for debugging
             })
         
         return viseme_sequence

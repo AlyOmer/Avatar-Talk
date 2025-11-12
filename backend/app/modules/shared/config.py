@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     resemble_api_key: str = ""
     
+    # Resemble.ai Configuration
+    resemble_project_uuid: str = "3d0a05be"  # Default project (accessible with current API key)
+    resemble_voice_uuid: str = "79eaf385"  # My Custom Voice
+    
     # Database
     chroma_persist_dir: str = "./chroma_db"
     

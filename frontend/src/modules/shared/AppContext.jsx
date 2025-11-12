@@ -16,7 +16,7 @@ export const AppProvider = ({ children }) => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [settings, setSettings] = useState({
     provider: 'gemini',
-    useRag: false,  // Disabled by default (requires OpenAI API key)
+    useRag: false,  // Disabled by default
     autoSpeak: true,
   });
 

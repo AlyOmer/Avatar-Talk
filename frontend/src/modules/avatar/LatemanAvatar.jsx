@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Box } from '@mui/material';
+import { getVisemeAtTime, FrameInterpolator, getFrameForViseme } from './utils/lipsyncUtils';
 
 // Speech: "well I met Doris at the bus stop on a rainy day no umbrella both of us drenched offered her a coat"
 // Map viseme indices (from backend) to video frame ranges that best represent those mouth shapes
@@ -35,19 +36,23 @@ const applyChromaKey = (ctx, width, height) => {
   ctx.putImageData(imageData, 0, 0);
 };
 
-const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSpeaking = false }) => {
+const LatemanAvatar = ({ 
+  audioTime = 0, 
+  audioDuration = 0, 
+  visemeIndex = 0, 
+  visemeSequence = [],
+  isSpeaking = false 
+}) => {
   const [currentFrame, setCurrentFrame] = useState(1);
   const [loadedImages, setLoadedImages] = useState({});
   const [loading, setLoading] = useState(true);
   const canvasRef = useRef(null);
-  const lastVisemeRef = useRef(0);
-  const visemeStartTimeRef = useRef(0);
   const imageLoadPromisesRef = useRef({});
   const frameAnimationRef = useRef(null);
-  const lastFrameRef = useRef(1);
   const audioTimeRef = useRef(0);
-  const visemeIndexRef = useRef(0);
   const isSpeakingRef = useRef(false);
+  const interpolatorRef = useRef(new FrameInterpolator(0.05)); // 50ms transitions
+  const visemeSequenceRef = useRef([]);
 
   // Optimized image preloading with caching
   useEffect(() => {
@@ -92,27 +97,16 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
     };
   }, []);
 
-  // Track previous viseme for logging
-  const prevVisemeRef = useRef(visemeIndex);
-  
   // Update refs with latest values
   useEffect(() => {
-    const prevViseme = prevVisemeRef.current;
     audioTimeRef.current = audioTime;
-    visemeIndexRef.current = visemeIndex;
     isSpeakingRef.current = isSpeaking;
-    
-    // Debug: Log when viseme changes
-    if (visemeIndex !== prevViseme) {
-      console.log(`📢 LatemanAvatar: visemeIndex changed ${prevViseme} -> ${visemeIndex}, isSpeaking: ${isSpeaking}, audioTime: ${audioTime.toFixed(3)}s`);
-      prevVisemeRef.current = visemeIndex;
-    }
-  }, [audioTime, visemeIndex, isSpeaking]);
+    visemeSequenceRef.current = visemeSequence;
+  }, [audioTime, isSpeaking, visemeSequence]);
 
-  // Continuous frame animation loop for smooth lip sync
+  // Enhanced animation loop with audio-time synchronization and frame interpolation
   useEffect(() => {
     if (loading) {
-      // Cancel any running animation
       if (frameAnimationRef.current) {
         cancelAnimationFrame(frameAnimationRef.current);
         frameAnimationRef.current = null;
@@ -122,10 +116,7 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
     
     if (!isSpeaking) {
       setCurrentFrame(1);
-      lastFrameRef.current = 1;
-      lastVisemeRef.current = 0;
-      visemeStartTimeRef.current = 0;
-      // Cancel animation when not speaking
+      interpolatorRef.current.reset();
       if (frameAnimationRef.current) {
         cancelAnimationFrame(frameAnimationRef.current);
         frameAnimationRef.current = null;
@@ -133,12 +124,11 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
       return;
     }
 
-    // Start/restart continuous animation loop
+    // Enhanced animation loop using audio.currentTime as source of truth
     const frameAnimationLoop = () => {
-      // Use refs to get latest values (not closure values)
       const currentAudioTime = audioTimeRef.current;
-      const currentVisemeIndex = visemeIndexRef.current;
       const currentlySpeaking = isSpeakingRef.current;
+      const currentVisemeSequence = visemeSequenceRef.current;
 
       if (!currentlySpeaking || loading) {
         if (frameAnimationRef.current) {
@@ -148,42 +138,34 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
         return;
       }
 
-      // Detect viseme change and reset timer - MUST check this first
-      if (currentVisemeIndex !== lastVisemeRef.current) {
-        console.log(`🔄 Viseme changed: ${lastVisemeRef.current} -> ${currentVisemeIndex} at ${currentAudioTime.toFixed(2)}s`);
-        lastVisemeRef.current = currentVisemeIndex;
-        visemeStartTimeRef.current = currentAudioTime;
-        // Force frame update when viseme changes
-        lastFrameRef.current = -1; // Force update
+      // Get current viseme based on audio time (precise synchronization)
+      let currentViseme = 0;
+      if (currentVisemeSequence && currentVisemeSequence.length > 0) {
+        // Use phoneme-aligned viseme sequence if available
+        currentViseme = getVisemeAtTime(currentAudioTime, currentVisemeSequence);
+      } else {
+        // Fallback to passed visemeIndex if sequence not available
+        currentViseme = visemeIndex;
       }
 
-      // Get frames for current viseme
-      const frames = VISEME_FRAME_MAP_ADJUSTED[currentVisemeIndex] || VISEME_FRAME_MAP_ADJUSTED[0];
-      
-      if (!frames || frames.length === 0) {
-        console.warn(`⚠️ No frames for viseme ${currentVisemeIndex}`);
-        frameAnimationRef.current = requestAnimationFrame(frameAnimationLoop);
-        return;
+      // Get target frame for current viseme with smooth cycling
+      const targetFrame = getFrameForViseme(
+        currentViseme,
+        currentVisemeSequence,
+        currentAudioTime,
+        VISEME_FRAME_MAP_ADJUSTED
+      );
+
+      // Apply frame interpolation for smooth transitions
+      interpolatorRef.current.setTargetFrame(targetFrame, currentAudioTime);
+      const interpolatedFrame = interpolatorRef.current.getInterpolatedFrame(currentAudioTime);
+
+      // Update frame if changed
+      if (interpolatedFrame !== currentFrame) {
+        setCurrentFrame(interpolatedFrame);
       }
 
-      // Calculate time since viseme started
-      const visemeTime = Math.max(0, currentAudioTime - visemeStartTimeRef.current);
-      
-      // Cycle through frames: 2 seconds per frame (0.5 frames per second)
-      const frameChangeRate = 1 / 2; // frames per second (0.5)
-      const frameSetIndex = Math.floor(visemeTime * frameChangeRate) % frames.length;
-      const newFrame = frames[frameSetIndex];
-      
-      // Always update frame to ensure animation
-      if (newFrame && newFrame !== lastFrameRef.current) {
-        lastFrameRef.current = newFrame;
-        setCurrentFrame(newFrame);
-        console.log(`🎬 Frame ${newFrame} (viseme ${currentVisemeIndex}, index ${frameSetIndex}/${frames.length}, time ${visemeTime.toFixed(3)}s)`);
-      } else if (!newFrame) {
-        console.warn(`⚠️ Invalid frame index ${frameSetIndex} for viseme ${currentVisemeIndex}`);
-      }
-
-      // Continue animation loop - ALWAYS continue if speaking
+      // Continue animation loop (60fps = ~16ms per frame)
       if (currentlySpeaking && !loading) {
         frameAnimationRef.current = requestAnimationFrame(frameAnimationLoop);
       } else {
@@ -196,9 +178,8 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
       cancelAnimationFrame(frameAnimationRef.current);
     }
     
-    // Reset viseme tracking when starting
-    lastVisemeRef.current = visemeIndex;
-    visemeStartTimeRef.current = audioTime;
+    // Reset interpolator when starting
+    interpolatorRef.current.reset();
     
     // Start the animation loop
     frameAnimationRef.current = requestAnimationFrame(frameAnimationLoop);
@@ -209,7 +190,7 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
         frameAnimationRef.current = null;
       }
     };
-  }, [visemeIndex, audioTime, isSpeaking, loading]);
+  }, [visemeIndex, audioTime, isSpeaking, loading, visemeSequence]);
 
   // Optimized canvas rendering with requestAnimationFrame
   useEffect(() => {
@@ -354,7 +335,8 @@ const LatemanAvatar = ({ audioTime = 0, audioDuration = 0, visemeIndex = 0, isSp
           <div>Frame: {currentFrame}/{TOTAL_FRAMES}</div>
           <div>Audio: {(audioTime * 1000).toFixed(0)}ms / {(audioDuration * 1000).toFixed(0)}ms</div>
           <div>Speaking: {isSpeaking ? 'YES' : 'NO'}</div>
-          <div>Mode: viseme-synced frames</div>
+          <div>Mode: {visemeSequence.length > 0 ? 'phoneme-aligned' : 'viseme-synced'}</div>
+          <div>Visemes: {visemeSequence.length > 0 ? visemeSequence.length : 'N/A'}</div>
           <div style={{marginTop: '4px', fontSize: '0.75rem', opacity: 0.7}}>
             Cropped: 0% L, 3% R, 15% top, 20% bottom
           </div>

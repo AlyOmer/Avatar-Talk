@@ -28,7 +28,9 @@ async def speak(request: SpeakRequest):
     """
     Generate speech audio and lip sync data for text
     
-    Returns audio as base64 and viseme sequence for animation
+    Returns audio as base64 and viseme sequence for animation.
+    Uses phoneme alignment data from Resemble AI when available,
+    falls back to text-based estimation if alignments are not available.
     """
     try:
         response_data = {}
@@ -37,21 +39,61 @@ async def speak(request: SpeakRequest):
         visemes_payload: List[Dict] = []
 
         if request.return_audio or request.return_visemes:
-            # Generate audio bytes and get actual duration
-            audio_bytes, actual_duration = tts_manager.text_to_speech_with_duration(request.text)
+            # Try to get phoneme alignments from Resemble AI
+            audio_bytes, phonemes, actual_duration = tts_manager.text_to_speech_with_alignments(request.text)
+            
+            # Validate audio was generated
+            if not audio_bytes or len(audio_bytes) < 100:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to generate audio: Audio data is empty or too small"
+                )
+            
             audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
             if request.return_audio:
                 response_data["audio_base64"] = audio_base64
 
             if request.return_visemes:
-                # Use actual audio duration for accurate viseme timing
-                visemes_payload = lipsync_manager.text_to_visemes(request.text, duration=actual_duration)
+                # Use phoneme alignments if available, otherwise fall back to text-based estimation
+                if phonemes and len(phonemes) > 0:
+                    # Convert Resemble AI phonemes to visemes with precise timing
+                    visemes_payload = lipsync_manager.resemble_phonemes_to_visemes(phonemes)
+                    print(f"✅ Using phoneme-aligned visemes: {len(visemes_payload)} visemes from {len(phonemes)} phonemes")
+                else:
+                    # Fallback to text-based estimation
+                    visemes_payload = lipsync_manager.text_to_visemes(request.text, duration=actual_duration)
+                    print(f"⚠️  Using text-based viseme estimation: {len(visemes_payload)} visemes")
+                
+                # Ensure we always return visemes (even if empty)
+                if not visemes_payload or len(visemes_payload) == 0:
+                    print("⚠️  No visemes generated, creating default silence viseme")
+                    visemes_payload = [{
+                        "viseme": 0,
+                        "viseme_name": "silence",
+                        "start": 0.0,
+                        "duration": actual_duration or 1.0,
+                        "end": actual_duration or 1.0
+                    }]
+                
                 response_data["visemes"] = visemes_payload
                 response_data["duration"] = actual_duration
 
         return SpeakResponse(**response_data)
     
+    except ValueError as e:
+        # Handle specific API errors (usage limits, auth errors, etc.)
+        error_message = str(e)
+        if "usage limit" in error_message.lower() or "rate limit" in error_message.lower():
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "Resemble.ai usage limit exceeded",
+                    "message": "Your Resemble.ai account has reached its usage limit. Please upgrade your plan or wait for the quota to reset.",
+                    "suggestion": "You can continue using the chatbot, but avatar speech generation is temporarily unavailable."
+                }
+            )
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

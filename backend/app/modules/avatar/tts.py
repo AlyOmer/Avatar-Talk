@@ -3,7 +3,7 @@ import hashlib
 import os
 import tempfile
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 import requests
 from resemble import Resemble
@@ -27,9 +27,9 @@ class TTSManager:
         self._cache: Dict[str, bytes] = {}
         self._cache_dir = tempfile.mkdtemp(prefix="tts_cache_")
 
-        # Resemble.ai configuration
-        self.project_uuid: str = "9d6b821e"  # Default project
-        self.voice_uuid: str = "68b8d08b"  # User-provided voice
+        # Resemble.ai configuration (from settings)
+        self.project_uuid: str = settings.resemble_project_uuid
+        self.voice_uuid: str = settings.resemble_voice_uuid
 
         self.api_error: Optional[str] = None
         self._initialize_tts()
@@ -168,8 +168,8 @@ class TTSManager:
                 raise ValueError("Resemble.ai API Error: Invalid API key") from exc
             if "404" in lowered or "not found" in lowered:
                 raise ValueError("Resemble.ai API Error: Project or voice not found") from exc
-            if "429" in lowered:
-                raise ValueError("Resemble.ai API Error: Rate limit exceeded") from exc
+            if "429" in lowered or "rate limit" in lowered or "usage limit" in lowered:
+                raise ValueError("Resemble.ai API Error: Usage limit exceeded. Please upgrade your plan or wait for quota reset.") from exc
             if "syn_server_url" in lowered:
                 raise ValueError("Resemble.ai Streaming API requires special access.") from exc
 
@@ -180,6 +180,154 @@ class TTSManager:
         audio_bytes = self.text_to_speech(text)
         duration = self._get_audio_duration(audio_bytes)
         return audio_bytes, duration
+
+    def text_to_speech_with_alignments(
+        self, 
+        text: str
+    ) -> Tuple[bytes, List[Dict], float]:
+        """
+        Generate speech with phoneme alignment data from Resemble AI
+        
+        Args:
+            text: Text to synthesize
+            
+        Returns:
+            Tuple of (audio_bytes, phoneme_alignments, duration)
+            phoneme_alignments: [{"phoneme": str, "start": float, "end": float}, ...]
+        """
+        if not self.api_key:
+            raise ValueError(f"Resemble.ai TTS Error: {self.api_error or 'TTS not initialized'}")
+        
+        if not self.voice_uuid:
+            raise ValueError("Resemble.ai TTS Error: Voice UUID not configured.")
+        
+        normalized_text = text.strip()
+        if len(normalized_text) > 1000:
+            normalized_text = normalized_text[:1000] + "..."
+        
+        try:
+            print("🎙️  Generating speech with Resemble.ai (with phoneme alignments)...")
+            print(f"📝 Text: {normalized_text[:60]}{'...' if len(normalized_text) > 60 else ''}")
+            
+            # Request phoneme alignments from Resemble AI
+            # Note: include_timestamps may not be available for all accounts
+            # Try with timestamps first, fallback to without if it fails
+            try:
+                response = Resemble.v2.clips.create_sync(
+                    self.project_uuid,
+                    self.voice_uuid,
+                    normalized_text,
+                    include_timestamps=True,  # Request phoneme/timestamp alignment data
+                    precision="high"  # Higher precision for better timing accuracy
+                )
+            except Exception as ts_error:
+                # If timestamps fail, try without them
+                print(f"⚠️  Timestamps request failed: {ts_error}, trying without timestamps")
+                response = Resemble.v2.clips.create_sync(
+                    self.project_uuid,
+                    self.voice_uuid,
+                    normalized_text,
+                )
+            
+            # Check for API errors first (before trying to extract data)
+            if isinstance(response, dict):
+                # Check if response indicates failure
+                if response.get("success") is False or "success" in response and not response.get("success", True):
+                    error_message = response.get("message", "Unknown error from Resemble.ai")
+                    # Check for rate limit / usage limit errors
+                    if "usage limit" in error_message.lower() or "rate limit" in error_message.lower():
+                        raise ValueError(f"Resemble.ai Usage Limit: {error_message}")
+                    raise RuntimeError(f"Resemble.ai API Error: {error_message}")
+            
+            # Extract audio URL and timestamps/alignments
+            audio_url: Optional[str] = None
+            alignments: List[Dict] = []
+            
+            # Debug: Log full response structure to understand format
+            print(f"🔍 Resemble API response type: {type(response)}")
+            if isinstance(response, dict):
+                print(f"🔍 Response keys: {list(response.keys())}")
+                item = response.get("item", {})
+                if item:
+                    print(f"🔍 Item keys: {list(item.keys())}")
+                audio_url = item.get("audio_src")
+                # Try multiple possible keys for timestamp/alignment data
+                # Resemble may return: timestamps, alignments, phonemes, or phoneme_alignments
+                alignments = (
+                    item.get("timestamps") or  # Word-level timestamps
+                    item.get("alignments") or   # Phoneme alignments
+                    item.get("phonemes") or     # Phoneme data
+                    item.get("phoneme_alignments") or
+                    item.get("word_timestamps") or  # Alternative name
+                    []
+                )
+                if alignments:
+                    print(f"🔍 Found {len(alignments)} timestamp/alignment entries")
+                    print(f"🔍 First entry: {alignments[0] if alignments else 'None'}")
+            elif hasattr(response, "item"):
+                audio_url = getattr(response.item, "audio_src", None)
+                alignments = (
+                    getattr(response.item, "timestamps", None) or
+                    getattr(response.item, "alignments", None) or
+                    getattr(response.item, "phonemes", None) or
+                    []
+                )
+            
+            if not audio_url:
+                raise RuntimeError(f"No audio URL returned from Resemble.ai: {response}")
+            
+            # Download audio
+            audio_response = requests.get(audio_url, timeout=30)
+            audio_response.raise_for_status()
+            audio_data = audio_response.content
+            
+            if len(audio_data) < 100:
+                raise RuntimeError("Received audio payload is too small.")
+            
+            # Parse phoneme alignments
+            # Resemble may return format: [{"phoneme": "AH", "start": 0.0, "end": 0.15}, ...]
+            phoneme_sequence: List[Dict] = []
+            if alignments:
+                for align in alignments:
+                    if isinstance(align, dict):
+                        phoneme_sequence.append({
+                            "phoneme": str(align.get("phoneme", "SIL")).upper(),
+                            "start": float(align.get("start", 0.0)),
+                            "end": float(align.get("end", align.get("start", 0.0))),
+                        })
+            
+            # Get actual audio duration
+            duration = self._get_audio_duration(audio_data)
+            
+            # Cache audio (but not alignments - they're small enough to regenerate)
+            self._store_cache(normalized_text, audio_data)
+            
+            if phoneme_sequence:
+                print(f"✅ Generated {len(audio_data)} bytes of audio with {len(phoneme_sequence)} phoneme alignments")
+            else:
+                print(f"⚠️  Generated {len(audio_data)} bytes of audio but no phoneme alignments returned")
+                print("   Falling back to text-based viseme estimation")
+            
+            return audio_data, phoneme_sequence, duration
+            
+        except Exception as exc:
+            message = str(exc)
+            print(f"❌ Error generating speech with alignments: {message}")
+            
+            # Check if it's a usage limit error - don't retry if so
+            if "usage limit" in message.lower() or "rate limit" in message.lower():
+                print("⚠️  Resemble.ai usage limit reached - cannot generate speech")
+                raise ValueError(f"Resemble.ai Usage Limit: {message}") from exc
+            
+            # Fallback to regular TTS if alignment request fails (but not for usage limits)
+            print("🔄 Falling back to standard TTS (no alignments)")
+            try:
+                audio_bytes = self.text_to_speech(text)
+                duration = self._get_audio_duration(audio_bytes)
+                return audio_bytes, [], duration
+            except Exception as fallback_exc:
+                # If fallback also fails, re-raise the original error
+                raise exc from fallback_exc
 
     def text_to_speech_base64(self, text: str) -> str:
         audio = self.text_to_speech(text)

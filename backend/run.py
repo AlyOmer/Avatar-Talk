@@ -2,7 +2,7 @@
 """
 Script to run the FastAPI backend server
 """
-import uvicorn
+import uvicorn  # type: ignore[import-untyped]
 from app.modules.shared.config import settings
 
 if __name__ == "__main__":
